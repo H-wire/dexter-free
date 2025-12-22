@@ -50,3 +50,6 @@ yarn-error.log*
 
 # Cursor files
 .cursor/
+
+# Logs
+dexter.log
