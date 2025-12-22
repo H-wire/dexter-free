@@ -154,6 +154,9 @@ If NO data was collected (query outside scope):
 - Answer using general knowledge, being helpful and concise
 - Add a brief note: "Note: I specialize in financial research, but I'm happy to assist with general questions."
 
+Critical:
+- The answer field must be a non-empty string and must never be "None" or "null"
+
 Remember: The user wants the ANSWER and the DATA, not a description of your research process."""
 
 

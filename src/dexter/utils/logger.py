@@ -1,3 +1,7 @@
+import json
+import os
+import time
+
 from dexter.utils.ui import UI
 
 
@@ -7,11 +11,24 @@ class Logger:
     def __init__(self):
         self.ui = UI()
         self.log = []
+        logging_env = os.getenv("LOGGING", "false").strip().lower()
+        self.logging_enabled = logging_env in {"1", "true", "yes", "on"}
+        self.log_file = os.getenv("DEXTER_LOG_FILE", "dexter.log")
 
     def _log(self, msg: str):
         """Print immediately and keep in log."""
         print(msg, flush=True)
         self.log.append(msg)
+
+    def _log_to_file(self, msg: str):
+        """Write a log message to file if file logging is enabled."""
+        if not self.logging_enabled:
+            return
+        try:
+            with open(self.log_file, "a", encoding="utf-8") as log_handle:
+                log_handle.write(msg + "\n")
+        except Exception:
+            pass
 
     def log_header(self, msg: str):
         self.ui.print_header(msg)
@@ -40,3 +57,24 @@ class Logger:
     def progress(self, message: str, success_message: str = ""):
         """Return a progress context manager for showing loading states."""
         return self.ui.progress(message, success_message)
+
+    def log_llm_request(self, system_prompt: str, prompt: str, meta: str = ""):
+        """Log outbound LLM request details."""
+        record = {
+            "event": "llm_request",
+            "timestamp": time.time(),
+            "system_prompt": system_prompt,
+            "prompt": prompt,
+            "meta": meta,
+        }
+        self._log_to_file(json.dumps(record, ensure_ascii=True))
+
+    def log_llm_response(self, response: str, meta: str = ""):
+        """Log inbound LLM response details."""
+        record = {
+            "event": "llm_response",
+            "timestamp": time.time(),
+            "response": response,
+            "meta": meta,
+        }
+        self._log_to_file(json.dumps(record, ensure_ascii=True))
