@@ -1,3 +1,6 @@
+import os
+from uuid import uuid4
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
 
 from langchain_core.messages import AIMessage
@@ -5,12 +8,13 @@ from langchain_core.messages import AIMessage
 from dexter.model import call_llm
 from dexter.prompts import (
     ACTION_SYSTEM_PROMPT,
+    ACTION_JSON_SYSTEM_PROMPT,
     get_answer_system_prompt,
     PLANNING_SYSTEM_PROMPT,
     get_tool_args_system_prompt,
     VALIDATION_SYSTEM_PROMPT,
 )
-from dexter.schemas import Answer, IsDone, OptimizedToolArgs, Task, TaskList
+from dexter.schemas import Answer, IsDone, OptimizedToolArgs, Task, TaskList, ToolCallList
 from dexter.tools import AVAILABLE_DATA_PROVIDERS, get_tools
 from dexter.utils.logger import Logger
 from dexter.utils.ui import show_progress
@@ -26,6 +30,10 @@ class Agent:
         self.logger = Logger()
         self.max_steps = max_steps            # global safety cap
         self.max_steps_per_task = max_steps_per_task
+        try:
+            self.max_parallel_tool_calls = int(os.getenv("DEXTER_MAX_PARALLEL_TOOL_CALLS", "4"))
+        except ValueError:
+            self.max_parallel_tool_calls = 4
         provider_key = data_provider.lower()
         if provider_key not in AVAILABLE_DATA_PROVIDERS:
             self.logger._log(
@@ -36,16 +44,76 @@ class Agent:
         self.tools = get_tools(provider_key)
         self.logger._log(f"Agent initialized with data provider: {self.data_provider}")
 
+    def _tool_descriptions(self) -> str:
+        return "\n".join([f"- {t.name}: {t.description}" for t in self.tools])
+
+    def _coerce_tool_calls(self, tool_call_list: ToolCallList, allowed_tools: List) -> list[dict]:
+        valid_names = {t.name for t in allowed_tools}
+        coerced = []
+        for call in tool_call_list.tool_calls:
+            if call.name not in valid_names:
+                continue
+            coerced.append(
+                {
+                    "name": call.name,
+                    "args": call.args,
+                    "id": f"call_{uuid4().hex}",
+                    "type": "tool_call",
+                }
+            )
+        return coerced
+
+    def _select_tools_for_task(self, task_desc: str) -> List:
+        desc = task_desc.lower()
+        selected = []
+
+        def include_if_name_contains(substrs: list[str]) -> None:
+            for tool in self.tools:
+                name = tool.name.lower()
+                if any(s in name for s in substrs):
+                    selected.append(tool)
+
+        if any(k in desc for k in ["10-q", "10q", "quarterly report", "quarterly filing"]):
+            include_if_name_contains(["10q", "filings"])
+        if any(k in desc for k in ["10-k", "10k", "annual report", "annual filing"]):
+            include_if_name_contains(["10k", "filings"])
+        if any(k in desc for k in ["8-k", "8k"]):
+            include_if_name_contains(["8k", "filings"])
+        if "filing" in desc:
+            include_if_name_contains(["filings"])
+        if "income statement" in desc or "income" in desc:
+            include_if_name_contains(["income_statements"])
+        if "balance sheet" in desc:
+            include_if_name_contains(["balance_sheets"])
+        if "cash flow" in desc:
+            include_if_name_contains(["cash_flow"])
+        if "price" in desc or "ticker" in desc or "symbol" in desc:
+            include_if_name_contains(["price_snapshot", "prices"])
+        if "news" in desc:
+            include_if_name_contains(["news"])
+        if "analyst" in desc or "estimates" in desc:
+            include_if_name_contains(["analyst_estimates", "estimates"])
+        if "metric" in desc:
+            include_if_name_contains(["metrics"])
+
+        # De-duplicate while preserving order.
+        seen = set()
+        unique = []
+        for tool in selected:
+            if tool.name not in seen:
+                unique.append(tool)
+                seen.add(tool.name)
+        return unique if unique else list(self.tools)
+
     # ---------- task planning ----------
     @show_progress("Planning tasks...", "Tasks planned")
     def plan_tasks(self, query: str) -> List[Task]:
-        tool_descriptions = "\n".join([f"- {t.name}: {t.description}" for t in self.tools])
         prompt = f"""
         Given the user query: "{query}",
         Create a list of tasks to be completed.
         Example: {{"tasks": [{{"id": 1, "description": "some task", "done": false}}]}}
         """
-        system_prompt = PLANNING_SYSTEM_PROMPT.format(tools=tool_descriptions)
+        system_prompt = PLANNING_SYSTEM_PROMPT.format(tools=self._tool_descriptions())
         try:
             response = call_llm(prompt, system_prompt=system_prompt, output_schema=TaskList)
             tasks = response.tasks
@@ -68,7 +136,37 @@ class Agent:
         Based on the task and the outputs, what should be the next step?
         """
         try:
-            return call_llm(prompt, system_prompt=ACTION_SYSTEM_PROMPT, tools=self.tools)
+            function_model = os.getenv("FUNCTION_MODEL")
+            if not function_model:
+                return call_llm(
+                    prompt,
+                    system_prompt=ACTION_SYSTEM_PROMPT,
+                    tools=self.tools,
+                )
+            selected_tools = self._select_tools_for_task(task_desc)
+            tool_descriptions = "\n".join([f"- {t.name}: {t.description}" for t in selected_tools])
+            json_prompt = f"""
+            Available tools (name: description):
+            {tool_descriptions}
+
+            Task: "{task_desc}"
+            History: {last_outputs}
+            """
+            json_response = call_llm(
+                json_prompt,
+                system_prompt=ACTION_JSON_SYSTEM_PROMPT,
+                output_schema=ToolCallList,
+                model_override=function_model,
+            )
+            if isinstance(json_response, dict):
+                json_response = ToolCallList.model_validate(json_response)
+            if isinstance(json_response, ToolCallList):
+                tool_calls = self._coerce_tool_calls(json_response, selected_tools)
+                if tool_calls:
+                    self.logger._log("Function model returned JSON tool calls.")
+                    return AIMessage(content="", tool_calls=tool_calls)
+            self.logger._log("Function model returned no tool calls.")
+            return AIMessage(content="", tool_calls=[])
         except Exception as e:
             self.logger._log(f"ask_for_actions failed: {e}")
             return AIMessage(content="Failed to get actions.")
@@ -111,7 +209,13 @@ class Agent:
         Pay special attention to filtering parameters that would help narrow down results to match the task.
         """
         try:
-            response = call_llm(prompt, system_prompt=get_tool_args_system_prompt(), output_schema=OptimizedToolArgs)
+            function_model = os.getenv("FUNCTION_MODEL")
+            response = call_llm(
+                prompt,
+                system_prompt=get_tool_args_system_prompt(),
+                output_schema=OptimizedToolArgs,
+                model_override=function_model,
+            )
             # Handle case where LLM returns dict directly instead of OptimizedToolArgs
             if isinstance(response, dict):
                 return response if response else initial_args
@@ -119,6 +223,49 @@ class Agent:
         except Exception as e:
             self.logger._log(f"Argument optimization failed: {e}, using original args")
             return initial_args
+
+    def _field_allows_list(self, field_schema: dict) -> bool:
+        """Check if a schema field accepts list values."""
+        if not isinstance(field_schema, dict):
+            return False
+        if field_schema.get("type") == "array":
+            return True
+        for key in ("anyOf", "oneOf"):
+            if key in field_schema and isinstance(field_schema[key], list):
+                for option in field_schema[key]:
+                    if isinstance(option, dict) and option.get("type") == "array":
+                        return True
+        return False
+
+    def _expand_tool_args(self, tool, args: dict) -> list[dict]:
+        """Expand list arguments into multiple tool calls when schema expects scalars."""
+        if not tool or not args:
+            return [args]
+        tool_schema = tool.args_schema.schema() if hasattr(tool, "args_schema") and tool.args_schema else {}
+        properties = tool_schema.get("properties", {}) if isinstance(tool_schema, dict) else {}
+        list_fields = {}
+        for key, value in args.items():
+            if isinstance(value, list):
+                field_schema = properties.get(key, {})
+                if not self._field_allows_list(field_schema):
+                    list_fields[key] = value
+        if not list_fields:
+            return [args]
+
+        expanded = [{}]
+        for key, value in args.items():
+            if key in list_fields:
+                new_expanded = []
+                for item in value:
+                    for base in expanded:
+                        merged = dict(base)
+                        merged[key] = item
+                        new_expanded.append(merged)
+                expanded = new_expanded
+            else:
+                for base in expanded:
+                    base[key] = value
+        return expanded
 
     # ---------- tool execution ----------
     def _execute_tool(self, tool, tool_name: str, inp_args):
@@ -128,6 +275,10 @@ class Agent:
         def run_tool():
             return tool.run(inp_args)
         return run_tool()
+
+    def _execute_tool_no_progress(self, tool, inp_args):
+        """Execute a tool without UI progress (safe for parallel runs)."""
+        return tool.run(inp_args)
     
     # ---------- confirm action ----------
     def confirm_action(self, tool: str, input_str: str) -> bool:
@@ -164,7 +315,7 @@ class Agent:
         # If no tasks were created, the query is likely out of scope.
         if not tasks:
             answer = self._generate_answer(query, session_outputs)
-            self.logger.log_summary(answer)
+            self.logger.log_summary(answer, query=query)
             return answer
 
         # 2. Execute tasks until all are complete or max steps are reached.
@@ -206,36 +357,50 @@ class Agent:
                     # Refine tool arguments for better performance.
                     optimized_args = self.optimize_tool_args(tool_name, initial_args, task.description)
                     
-                    # Create a signature of the action to be taken.
-                    action_sig = f"{tool_name}:{optimized_args}"
-
-                    # Detect and prevent repetitive action loops.
-                    last_actions.append(action_sig)
-                    if len(last_actions) > 4:
-                        last_actions = last_actions[-4:]
-                    if len(set(last_actions)) == 1 and len(last_actions) == 4:
-                        self.logger._log("Detected repeating action — aborting to avoid loop.")
-                        return
-                    
                     # Execute the tool.
                     tool_to_run = next((t for t in self.tools if t.name == tool_name), None)
-                    if tool_to_run and self.confirm_action(tool_name, str(optimized_args)):
-                        try:
-                            result = self._execute_tool(tool_to_run, tool_name, optimized_args)
-                            self.logger.log_tool_run(tool_name, f"{result}")
-                            output = f"Output of {tool_name} with args {optimized_args}: {result}"
-                            session_outputs.append(output)
-                            task_outputs.append(output)
-                        except Exception as e:
-                            self.logger._log(f"Tool execution failed: {e}")
-                            error_output = f"Error from {tool_name} with args {optimized_args}: {e}"
-                            session_outputs.append(error_output)
-                            task_outputs.append(error_output)
-                    else:
-                        self.logger._log(f"Invalid tool: {tool_name}")
+                    expanded_args_list = self._expand_tool_args(tool_to_run, optimized_args)
+                    to_execute = []
+                    for expanded_args in expanded_args_list:
+                        # Create a signature of the action to be taken.
+                        action_sig = f"{tool_name}:{expanded_args}"
 
-                    step_count += 1
-                    per_task_steps += 1
+                        # Detect and prevent repetitive action loops.
+                        last_actions.append(action_sig)
+                        if len(last_actions) > 4:
+                            last_actions = last_actions[-4:]
+                        if len(set(last_actions)) == 1 and len(last_actions) == 4:
+                            self.logger._log("Detected repeating action — aborting to avoid loop.")
+                            return
+
+                        if tool_to_run and self.confirm_action(tool_name, str(expanded_args)):
+                            to_execute.append((tool_to_run, tool_name, expanded_args))
+                        else:
+                            self.logger._log(f"Invalid tool: {tool_name}")
+
+                    if to_execute:
+                        max_workers = min(self.max_parallel_tool_calls, len(to_execute))
+                        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                            futures = {
+                                executor.submit(self._execute_tool_no_progress, tool_obj, args): (name, args)
+                                for tool_obj, name, args in to_execute
+                            }
+                            for future in as_completed(futures):
+                                name, args = futures[future]
+                                try:
+                                    result = future.result()
+                                    self.logger.log_tool_run(name, f"{result}")
+                                    output = f"Output of {name} with args {args}: {result}"
+                                    session_outputs.append(output)
+                                    task_outputs.append(output)
+                                except Exception as e:
+                                    self.logger._log(f"Tool execution failed: {e}")
+                                    error_output = f"Error from {name} with args {args}: {e}"
+                                    session_outputs.append(error_output)
+                                    task_outputs.append(error_output)
+
+                    step_count += len(to_execute)
+                    per_task_steps += len(to_execute)
 
                 # After a batch of tool calls, check if the task is complete.
                 if self.ask_if_done(task.description, "\n".join(task_outputs)):
@@ -245,7 +410,7 @@ class Agent:
 
         # 3. Synthesize the final answer from all collected tool outputs.
         answer = self._generate_answer(query, session_outputs)
-        self.logger.log_summary(answer)
+        self.logger.log_summary(answer, query=query)
         return answer
     
     # ---------- answer generation ----------

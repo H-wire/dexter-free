@@ -18,6 +18,18 @@ def _parse_args() -> argparse.Namespace:
         default=os.getenv("DEXTER_DATA_PROVIDER", "yfinance"),
         help="Select the data provider backend. Overrides the DEXTER_DATA_PROVIDER environment variable.",
     )
+    parser.add_argument(
+        "--openai-base-url",
+        dest="openai_base_url",
+        default=os.getenv("OPENAI_BASE_URL"),
+        help="Optional: Custom OpenAI-compatible base URL (e.g., http://localhost:1234/v1)",
+    )
+    parser.add_argument(
+        "--openai-model",
+        dest="openai_model",
+        default=os.getenv("OPENAI_MODEL"),
+        help="Optional: Model name/ID for the LLM (e.g., llama3.1)",
+    )
     return parser.parse_args()
 
 
@@ -25,6 +37,13 @@ def main():
     load_dotenv()
     args = _parse_args()
     print_intro()
+
+    # Apply CLI overrides for local OpenAI-compatible servers
+    if args.openai_base_url:
+        os.environ["OPENAI_BASE_URL"] = args.openai_base_url
+    if args.openai_model:
+        os.environ["OPENAI_MODEL"] = args.openai_model
+
     agent = Agent(data_provider=args.provider)
 
     session = PromptSession(history=InMemoryHistory())

@@ -51,8 +51,8 @@ class Logger:
     def log_risky(self, tool: str, input_str: str):
         self.ui.print_warning(f"Risky action {tool}({input_str}) — auto-confirmed")
 
-    def log_summary(self, summary: str):
-        self.ui.print_answer(summary)
+    def log_summary(self, summary: str, query: str = ""):
+        self.ui.print_answer(summary, query=query)
     
     def progress(self, message: str, success_message: str = ""):
         """Return a progress context manager for showing loading states."""

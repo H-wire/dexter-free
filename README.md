@@ -66,6 +66,32 @@ Switch to the FinancialDatasets provider when you need premium data:
 uv run dexter-agent --provider financialdatasets
 ```
 
+### Using a Local OpenAI-Compatible Server
+
+Dexter can talk to an OpenAI-compatible API such as LM Studio, vLLM, or Ollama (with the OpenAI endpoint enabled).
+
+1) Configure environment (or use CLI flags):
+```bash
+# .env
+OPENAI_BASE_URL=http://localhost:1234/v1   # Your server endpoint
+OPENAI_MODEL=llama3.1                      # Model id on your server
+# If your server doesn't require a key, leave OPENAI_API_KEY unset; Dexter will use a safe default.
+```
+
+2) Run Dexter (env-based):
+```bash
+uv run dexter-agent
+```
+
+Or pass overrides via CLI:
+```bash
+uv run dexter-agent --openai-base-url http://localhost:1234/v1 --openai-model llama3.1
+```
+
+Notes:
+- Tool calling/structured outputs require a model that supports function-calling. If unsupported, Dexter gracefully falls back to plain text responses.
+- Optional tuning via `OPENAI_TIMEOUT` and `OPENAI_MAX_RETRIES`.
+
 ### Example Queries
 
 Try asking Dexter questions like:

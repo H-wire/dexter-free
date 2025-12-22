@@ -22,3 +22,12 @@ class Answer(BaseModel):
 class OptimizedToolArgs(BaseModel):
     """Represents optimized arguments for a tool call."""
     arguments: Dict[str, Any] = Field(..., description="The optimized arguments dictionary for the tool call.")
+
+class ToolCallSpec(BaseModel):
+    """Represents a single tool call selection."""
+    name: str = Field(..., description="The tool name to invoke.")
+    args: Dict[str, Any] = Field(default_factory=dict, description="Arguments for the tool call.")
+
+class ToolCallList(BaseModel):
+    """Represents a list of tool calls to execute."""
+    tool_calls: List[ToolCallSpec] = Field(default_factory=list, description="Tool calls to execute.")

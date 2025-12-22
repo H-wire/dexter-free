@@ -138,44 +138,12 @@ class UI:
         args_display = f" {Colors.DIM}({args[:50]}...){Colors.ENDC}" if args and len(args) > 0 else ""
         print(f"  {Colors.YELLOW}⚡{Colors.ENDC} {tool_name}{args_display}")
     
-    def print_answer(self, answer: str):
-        """Print the final answer in a beautiful box."""
-        width = 80
-        
-        # Top border
-        print(f"\n{Colors.BOLD}{Colors.BLUE}╔{'═' * (width - 2)}╗{Colors.ENDC}")
-        
-        # Title
-        title = "ANSWER"
-        padding = (width - len(title) - 2) // 2
-        print(f"{Colors.BOLD}{Colors.BLUE}║{' ' * padding}{title}{' ' * (width - len(title) - padding - 2)}║{Colors.ENDC}")
-        
-        # Separator
-        print(f"{Colors.BLUE}╠{'═' * (width - 2)}╣{Colors.ENDC}")
-        
-        # Answer content with proper line wrapping
-        print(f"{Colors.BLUE}║{Colors.ENDC}{' ' * (width - 2)}{Colors.BLUE}║{Colors.ENDC}")
-        for line in answer.split('\n'):
-            if len(line) == 0:
-                print(f"{Colors.BLUE}║{Colors.ENDC}{' ' * (width - 2)}{Colors.BLUE}║{Colors.ENDC}")
-            else:
-                # Word wrap long lines
-                words = line.split()
-                current_line = ""
-                for word in words:
-                    if len(current_line) + len(word) + 1 <= width - 6:
-                        current_line += word + " "
-                    else:
-                        if current_line:
-                            print(f"{Colors.BLUE}║{Colors.ENDC} {current_line.ljust(width - 4)} {Colors.BLUE}║{Colors.ENDC}")
-                        current_line = word + " "
-                if current_line:
-                    print(f"{Colors.BLUE}║{Colors.ENDC} {current_line.ljust(width - 4)} {Colors.BLUE}║{Colors.ENDC}")
-        
-        print(f"{Colors.BLUE}║{Colors.ENDC}{' ' * (width - 2)}{Colors.BLUE}║{Colors.ENDC}")
-        
-        # Bottom border
-        print(f"{Colors.BOLD}{Colors.BLUE}╚{'═' * (width - 2)}╝{Colors.ENDC}\n")
+    def print_answer(self, answer: str, query: str = ""):
+        """Print the final answer as raw markdown."""
+        if query:
+            print(f"\n## Question\n{query}\n\n## Answer\n{answer}\n")
+        else:
+            print(f"\n## Answer\n{answer}\n")
     
     def print_info(self, message: str):
         """Print an info message."""
@@ -188,4 +156,3 @@ class UI:
     def print_warning(self, message: str):
         """Print a warning message."""
         print(f"{Colors.YELLOW}⚠ Warning:{Colors.ENDC} {message}")
-
