@@ -116,7 +116,12 @@ class Agent:
         system_prompt = PLANNING_SYSTEM_PROMPT.format(tools=self._tool_descriptions())
         try:
             response = call_llm(prompt, system_prompt=system_prompt, output_schema=TaskList)
-            tasks = response.tasks
+            if isinstance(response, TaskList):
+                tasks = response.tasks
+            elif isinstance(response, dict):
+                tasks = TaskList.model_validate(response).tasks
+            else:
+                raise ValueError("Task planner returned non-structured output.")
         except Exception as e:
             self.logger._log(f"Planning failed: {e}")
             tasks = [Task(id=1, description=query, done=False)]

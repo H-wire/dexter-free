@@ -94,6 +94,7 @@ Notes:
 - Tool calling/structured outputs require a model that supports function-calling. If unsupported, Dexter gracefully falls back to plain text responses.
 - If you're using the official OpenAI API, set `OPENAI_COMPAT_PROVIDER=openai` (or leave it blank). For Ollama/OpenAI-compatible locals, set `OPENAI_COMPAT_PROVIDER=ollama` to enable JSON-mode coercion.
 - Optional tuning via `OPENAI_TIMEOUT` and `OPENAI_MAX_RETRIES`.
+- For FinancialDatasets, set `FINANCIAL_DATASETS_API_KEY`. Optionally override the endpoint with `FINANCIAL_DATASETS_BASE_URL`.
 
 ### Example Queries
 
