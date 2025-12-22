@@ -75,6 +75,8 @@ Dexter can talk to an OpenAI-compatible API such as LM Studio, vLLM, or Ollama (
 # .env
 OPENAI_BASE_URL=http://localhost:1234/v1   # Your server endpoint
 OPENAI_MODEL=llama3.1                      # Model id on your server
+# Hint Dexter about the compatibility layer (openai or ollama); defaults to auto-detect.
+# OPENAI_COMPAT_PROVIDER=ollama
 # If your server doesn't require a key, leave OPENAI_API_KEY unset; Dexter will use a safe default.
 ```
 
@@ -90,6 +92,7 @@ uv run dexter-agent --openai-base-url http://localhost:1234/v1 --openai-model ll
 
 Notes:
 - Tool calling/structured outputs require a model that supports function-calling. If unsupported, Dexter gracefully falls back to plain text responses.
+- If you're using the official OpenAI API, set `OPENAI_COMPAT_PROVIDER=openai` (or leave it blank). For Ollama/OpenAI-compatible locals, set `OPENAI_COMPAT_PROVIDER=ollama` to enable JSON-mode coercion.
 - Optional tuning via `OPENAI_TIMEOUT` and `OPENAI_MAX_RETRIES`.
 
 ### Example Queries

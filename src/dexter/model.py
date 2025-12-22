@@ -7,6 +7,7 @@ from typing import Type, List, Optional, Any
 from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage
+from langchain_core.exceptions import OutputParserException
 from langchain_core.tools import BaseTool
 from openai import APIConnectionError
 from pydantic import BaseModel
@@ -164,6 +165,16 @@ def _is_ollama_endpoint(base_url: Optional[str]) -> bool:
     return "ollama" in lowered or "11434" in lowered
 
 
+def _get_provider_type(base_url: Optional[str]) -> str:
+    """Return the selected provider type (openai or ollama)."""
+    env = os.getenv("OPENAI_COMPAT_PROVIDER", "").strip().lower()
+    if env in {"openai", "ollama"}:
+        return env
+    if _is_ollama_endpoint(base_url):
+        return "ollama"
+    return "openai"
+
+
 def _is_empty_answer(answer: str) -> bool:
     """Detect empty or placeholder Answer content."""
     normalized = (answer or "").strip().lower()
@@ -207,6 +218,7 @@ def call_llm(
         _logger._log("Invalid DEXTER_MAX_PROMPT_CHARS; ignoring.")
         max_prompt_chars = None
 
+    requested_schema = output_schema
     final_system_prompt = system_prompt if system_prompt else DEFAULT_SYSTEM_PROMPT
     final_system_prompt, system_truncated = _truncate_prompt(final_system_prompt, max_prompt_chars)
     prompt, user_truncated = _truncate_prompt(prompt, max_prompt_chars)
@@ -218,31 +230,35 @@ def call_llm(
 
     llm = get_llm(model_override=model_override)
     runnable = llm
+    active_schema = requested_schema
     prefer_tools = False
     base_url = os.getenv("OPENAI_BASE_URL")
     json_mode = False
     base_extra_body = _get_base_extra_body(base_url, llm.model_name)
 
+    provider_type = _get_provider_type(base_url)
+
     try:
-        if output_schema is not None and _is_ollama_endpoint(base_url) and not tools:
+        if active_schema is not None and provider_type == "ollama" and not tools:
             json_mode = True
             extra_body = dict(base_extra_body or {})
             extra_body["format"] = "json"
             runnable = llm.bind(extra_body=extra_body)
-        elif output_schema is not None:
-            runnable = llm.with_structured_output(output_schema, method="function_calling")
+        elif active_schema is not None:
+            runnable = llm.with_structured_output(active_schema, method="function_calling")
         elif tools:
             prefer_tools = True
             runnable = llm.bind_tools(tools)
     except Exception as e:
-        _logger._log(f"LLM does not support structured outputs/tools: {e}. Falling back to plain model.")
+        err_msg = _truncate_text(str(e), limit=200)
+        _logger._log(f"LLM does not support structured outputs/tools: {err_msg}. Falling back to plain model.")
         runnable = llm
 
     chain = prompt_template | runnable
     tool_names = [t.name for t in tools] if tools else []
     meta_bits = []
-    if output_schema is not None:
-        meta_bits.append(f"schema={output_schema.__name__}")
+    if requested_schema is not None:
+        meta_bits.append(f"schema={requested_schema.__name__}")
     if tool_names:
         meta_bits.append(f"tools={tool_names}")
     meta_bits.append(f"model={llm.model_name}")
@@ -264,28 +280,32 @@ def call_llm(
     except ValueError:
         max_attempts = 3
 
+    json_error_logged = False
     for attempt in range(max_attempts):
         try:
             result = chain.invoke({"prompt": prompt})
             # If structured output is requested but not returned, try to coerce
-            if output_schema is not None and not _is_structured_result(result):
+            if requested_schema is not None and not _is_structured_result(result):
                 if json_mode:
                     content = getattr(result, "content", None)
                     data = _extract_json(content) if isinstance(content, str) else None
                     if data is not None:
                         try:
-                            coerced = output_schema.model_validate(data)
+                            coerced = requested_schema.model_validate(data)
                             _logger.log_llm_response(
                                 _truncate_text(_format_llm_response(coerced)),
                                 meta=meta,
                             )
-                            if output_schema is Answer and _is_empty_answer(coerced.answer):
+                            if requested_schema is Answer and _is_empty_answer(coerced.answer):
                                 return _fallback_plain_answer(prompt_template, llm, prompt, meta)
                             return coerced  # type: ignore[return-value]
                         except Exception:
+                            if not json_error_logged:
+                                _logger._log("Structured JSON parsing failed; reverting to plain text when possible.")
+                                json_error_logged = True
                             pass
                 # Special-case Answer schema to avoid crashes
-                if output_schema is Answer:
+                if requested_schema is Answer:
                     content = getattr(result, "content", str(result))
                     try:
                         coerced = Answer(answer=str(content))
@@ -297,28 +317,34 @@ def call_llm(
                             return _fallback_plain_answer(prompt_template, llm, prompt, meta)
                         return coerced  # type: ignore[return-value]
                     except Exception:
-                        return result
+                        if not json_error_logged:
+                            _logger._log("Structured JSON parsing failed; reverting to plain text when possible.")
+                            json_error_logged = True
+                        pass
                 # Try JSON coercion for other schemas
                 content = getattr(result, "content", None)
                 data = _extract_json(content) if isinstance(content, str) else None
                 if data is not None:
                     try:
-                        coerced = output_schema.model_validate(data)
+                        coerced = requested_schema.model_validate(data)
                         _logger.log_llm_response(
                             _truncate_text(_format_llm_response(coerced)),
                             meta=meta,
                         )
                         return coerced  # type: ignore[return-value]
                     except Exception:
+                        if not json_error_logged:
+                            _logger._log("Structured JSON parsing failed; reverting to plain text when possible.")
+                            json_error_logged = True
                         pass
             _logger.log_llm_response(
                 _truncate_text(_format_llm_response(result)),
                 meta=meta,
             )
-            if output_schema is Answer and isinstance(result, Answer):
+            if requested_schema is Answer and isinstance(result, Answer):
                 if _is_empty_answer(result.answer):
                     return _fallback_plain_answer(prompt_template, llm, prompt, meta)
-            if output_schema is Answer and not isinstance(result, Answer):
+            if requested_schema is Answer and not isinstance(result, Answer):
                 content = getattr(result, "content", None)
                 if isinstance(content, str):
                     data = _extract_json(content)
@@ -327,6 +353,10 @@ def call_llm(
                             return _fallback_plain_answer(prompt_template, llm, prompt, meta)
                     if _is_empty_answer(content):
                         return _fallback_plain_answer(prompt_template, llm, prompt, meta)
+                coerced = Answer(answer=str(content) if content is not None else str(result))
+                if _is_empty_answer(coerced.answer):
+                    return _fallback_plain_answer(prompt_template, llm, prompt, meta)
+                return coerced
             return result
         except APIConnectionError as e:
             if attempt >= max_attempts - 1:
@@ -334,10 +364,17 @@ def call_llm(
             time.sleep(0.5 * (2 ** attempt))
         except Exception as e:
             # If tool-calling path failed, try a final plain LLM pass
-            if prefer_tools or output_schema is not None:
-                _logger._log(f"Invocation failed; retrying without tools/structured output: {e}")
+            if prefer_tools or active_schema is not None:
+                if isinstance(e, OutputParserException):
+                    err_reason = f"{e.__class__.__name__}"
+                else:
+                    err_reason = _truncate_text(str(e), limit=200)
+                _logger._log(
+                    f"Invocation failed; retrying without tools/structured output ({err_reason})."
+                )
                 chain = prompt_template | llm
                 prefer_tools = False
-                output_schema = None
+                active_schema = None
+                json_mode = False
                 continue
             raise

@@ -70,7 +70,7 @@ Each tool call must be an object with:
 - "name": the tool name
 - "args": a JSON object of arguments
 
-If no tool call is needed, return: {"tool_calls": []}
+If no tool call is needed, return a JSON object where "tool_calls" is an empty list (example: tool_calls = [])
 
 Do not refuse or explain. Only return the JSON object."""
 
