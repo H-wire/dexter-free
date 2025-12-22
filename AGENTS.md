@@ -40,7 +40,6 @@
 - Log contents: only LLM request/response events are written as JSON lines (one JSON object per line).
 - Ollama structured output: when `OPENAI_BASE_URL` points to Ollama, structured outputs use JSON mode via `extra_body={"format":"json"}` (OpenAI-compatible endpoint).
 - Function model: set `FUNCTION_MODEL` to use a separate model for tool selection/argument optimization; `FUNCTION_NUM_CTX` controls its context window.
-- Ollama JSON bypass: when using the function model with structured output, Dexter can call `/api/chat` directly to enforce JSON mode.
 - Prompt truncation: `DEXTER_MAX_PROMPT_CHARS` hard-truncates system/user prompts to avoid overrunning context.
 - Parallel tool calls: `DEXTER_MAX_PARALLEL_TOOL_CALLS` controls concurrent tool execution.
 - Empty answer fallback: if the model returns empty or `"None"` for the Answer schema, Dexter retries once without structured output.

@@ -2,8 +2,6 @@ import os
 import re
 import json
 import time
-import urllib.request
-import urllib.error
 from typing import Type, List, Optional, Any
 
 from langchain_openai import ChatOpenAI
@@ -47,74 +45,6 @@ def _get_base_extra_body(base_url: Optional[str], model_name: str) -> Optional[d
     return {"options": {"num_ctx": num_ctx}}
 
 
-def _ollama_api_base(base_url: Optional[str]) -> Optional[str]:
-    if not base_url:
-        return None
-    if base_url.endswith("/v1"):
-        return base_url[:-3]
-    return base_url
-
-
-def _call_ollama_chat_json(
-    prompt: str,
-    system_prompt: str,
-    model_name: str,
-    output_schema: Type[BaseModel],
-) -> Optional[BaseModel]:
-    base_url = os.getenv("OPENAI_BASE_URL")
-    api_base = _ollama_api_base(base_url)
-    if not api_base:
-        return None
-    num_ctx = _get_num_ctx_for_model(model_name)
-    options: dict[str, Any] = {"temperature": 0}
-    if num_ctx is not None:
-        options["num_ctx"] = num_ctx
-    payload = {
-        "model": model_name,
-        "format": "json",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        "options": options,
-        "stream": False,
-    }
-    url = f"{api_base}/api/chat"
-    data = json.dumps(payload).encode("utf-8")
-    timeout_env = os.getenv("OPENAI_TIMEOUT")
-    try:
-        timeout = float(timeout_env) if timeout_env else None
-    except ValueError:
-        timeout = None
-
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            body = response.read().decode("utf-8")
-    except Exception as e:
-        _logger._log(f"Ollama JSON bypass failed: {e}")
-        return None
-
-    try:
-        payload = json.loads(body)
-    except Exception:
-        return None
-
-    content = payload.get("message", {}).get("content")
-    if not isinstance(content, str):
-        return None
-    data = _extract_json(content)
-    if not isinstance(data, dict):
-        return None
-    try:
-        return output_schema.model_validate(data)
-    except Exception:
-        return None
 
 
 def get_llm(model_override: Optional[str] = None) -> ChatOpenAI:
@@ -292,13 +222,6 @@ def call_llm(
     base_url = os.getenv("OPENAI_BASE_URL")
     json_mode = False
     base_extra_body = _get_base_extra_body(base_url, llm.model_name)
-    function_model = os.getenv("FUNCTION_MODEL")
-    use_ollama_bypass = (
-        output_schema is not None
-        and function_model
-        and model_override == function_model
-        and _is_ollama_endpoint(base_url)
-    )
 
     try:
         if output_schema is not None and _is_ollama_endpoint(base_url) and not tools:
@@ -325,8 +248,6 @@ def call_llm(
     meta_bits.append(f"model={llm.model_name}")
     if json_mode:
         meta_bits.append("json_mode=ollama")
-    if use_ollama_bypass:
-        meta_bits.append("ollama_bypass=api_chat")
     if system_truncated or user_truncated:
         meta_bits.append("prompt_truncated=true")
     meta = " ".join(meta_bits)
@@ -345,19 +266,6 @@ def call_llm(
 
     for attempt in range(max_attempts):
         try:
-            if use_ollama_bypass:
-                result = _call_ollama_chat_json(
-                    prompt=prompt,
-                    system_prompt=final_system_prompt,
-                    model_name=llm.model_name,
-                    output_schema=output_schema,
-                )
-                if result is not None:
-                    _logger.log_llm_response(
-                        _truncate_text(_format_llm_response(result)),
-                        meta=meta,
-                    )
-                    return result  # type: ignore[return-value]
             result = chain.invoke({"prompt": prompt})
             # If structured output is requested but not returned, try to coerce
             if output_schema is not None and not _is_structured_result(result):
