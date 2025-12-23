@@ -321,10 +321,24 @@ class Agent:
             return args
         normalized = dict(args)
 
+        # Normalize symbol/ticker parameter names (including plural forms)
         if "symbol" in normalized and "ticker" not in normalized:
             normalized["ticker"] = normalized.pop("symbol")
+        if "tickers" in normalized and "ticker" not in normalized:
+            # Handle plural form - if it's a single ticker, convert to singular
+            tickers_value = normalized.pop("tickers")
+            if isinstance(tickers_value, str):
+                normalized["ticker"] = tickers_value
+            elif isinstance(tickers_value, list) and len(tickers_value) == 1:
+                normalized["ticker"] = tickers_value[0]
+            else:
+                # If multiple tickers, keep as list for expansion
+                normalized["ticker"] = tickers_value
 
-        statement_tools = {"get_income_statements", "get_balance_sheets", "get_cash_flow_statements"}
+        statement_tools = {
+            "get_income_statements", "get_balance_sheets", "get_cash_flow_statements",
+            "yf_get_income_statements", "yf_get_balance_sheets", "yf_get_cash_flow_statements"
+        }
         if tool_name in statement_tools:
             period = normalized.get("period")
             latest = normalized.pop("latest", None)
@@ -341,7 +355,7 @@ class Agent:
             elif not period:
                 normalized.setdefault("period", "quarterly")
 
-        if tool_name == "get_price_snapshot":
+        if tool_name in {"get_price_snapshot", "yf_get_price_snapshot"}:
             normalized.setdefault("ticker", normalized.get("symbol"))
 
         return normalized
