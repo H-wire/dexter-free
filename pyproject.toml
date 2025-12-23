@@ -17,6 +17,7 @@ dependencies = [
     "python-dotenv>=1.1.1",
     "requests>=2.32.5",
     "yfinance>=0.2.66",
+    "duckduckgo-search>=5.3.1.b1",
 ]
 
 [project.scripts]
@@ -24,3 +25,6 @@ dexter-agent = "dexter.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

@@ -2,6 +2,7 @@ import argparse
 import os
 
 from dotenv import load_dotenv
+load_dotenv()
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import InMemoryHistory
 
@@ -34,7 +35,6 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main():
-    load_dotenv()
     args = _parse_args()
     print_intro()
 

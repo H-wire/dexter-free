@@ -15,7 +15,7 @@ def get_news(
     ticker: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    limit: int = 5,
+    limit: int = 10,
 ) -> dict:
     """
     Retrieves recent news articles for a given company ticker,

@@ -1,7 +1,9 @@
+import json
 import os
+import re
 from uuid import uuid4
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List
+from typing import List, Optional
 
 from langchain_core.messages import AIMessage
 
@@ -43,6 +45,8 @@ class Agent:
         self.data_provider = provider_key
         self.tools = get_tools(provider_key)
         self.logger._log(f"Agent initialized with data provider: {self.data_provider}")
+        disable_flag = os.getenv("DEXTER_DISABLE_TOOL_ARG_OPTIMIZATION", "").strip().lower()
+        self.disable_tool_arg_optimization = disable_flag in {"1", "true", "yes", "on"}
 
     def _tool_descriptions(self) -> str:
         return "\n".join([f"- {t.name}: {t.description}" for t in self.tools])
@@ -105,6 +109,37 @@ class Agent:
                 seen.add(tool.name)
         return unique if unique else list(self.tools)
 
+    def _extract_json_from_text(self, text: str) -> Optional[dict]:
+        """Try to find the first JSON object in a plain-text message."""
+        if not text:
+            return None
+        matches = re.findall(r"\{.*?\}", text, re.DOTALL)
+        for candidate in matches:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+        return None
+
+    def _parse_tasks_from_text(self, text: str) -> list[Task]:
+        """Parse TaskList JSON from an LLM text response when structured output is disabled."""
+        payload = self._extract_json_from_text(text)
+        if not payload or not isinstance(payload, dict):
+            return []
+        tasks_data = payload.get("tasks")
+        if not isinstance(tasks_data, list):
+            return []
+        parsed_tasks: list[Task] = []
+        for entry in tasks_data:
+            if isinstance(entry, Task):
+                parsed_tasks.append(entry)
+            elif isinstance(entry, dict):
+                try:
+                    parsed_tasks.append(Task.model_validate(entry))
+                except Exception:
+                    continue
+        return parsed_tasks
+
     # ---------- task planning ----------
     @show_progress("Planning tasks...", "Tasks planned")
     def plan_tasks(self, query: str) -> List[Task]:
@@ -116,9 +151,22 @@ class Agent:
         system_prompt = PLANNING_SYSTEM_PROMPT.format(tools=self._tool_descriptions())
         try:
             response = call_llm(prompt, system_prompt=system_prompt, output_schema=TaskList)
-            tasks = response.tasks
+            if isinstance(response, TaskList):
+                tasks = response.tasks
+            elif isinstance(response, dict):
+                tasks = TaskList.model_validate(response).tasks
+            else:
+                raw_text = getattr(response, "content", "") if hasattr(response, "content") else str(response)
+                tasks = self._parse_tasks_from_text(raw_text)
         except Exception as e:
-            self.logger._log(f"Planning failed: {e}")
+            # Try to salvage tasks if LLM returned a plain message
+            fallback_message = getattr(e, "response", None)
+            if isinstance(fallback_message, AIMessage):
+                tasks = self._parse_tasks_from_text(getattr(fallback_message, "content", ""))
+            else:
+                self.logger._log(f"Planning failed: {e}")
+                tasks = []
+        if not tasks:
             tasks = [Task(id=1, description=query, done=False)]
         
         task_dicts = [task.dict() for task in tasks]
@@ -267,6 +315,37 @@ class Agent:
                     base[key] = value
         return expanded
 
+    def _normalize_tool_args(self, tool_name: str, args: dict) -> dict:
+        """Normalize loose tool arguments (symbol vs. ticker, latest shortcuts, missing period)."""
+        if not isinstance(args, dict):
+            return args
+        normalized = dict(args)
+
+        if "symbol" in normalized and "ticker" not in normalized:
+            normalized["ticker"] = normalized.pop("symbol")
+
+        statement_tools = {"get_income_statements", "get_balance_sheets", "get_cash_flow_statements"}
+        if tool_name in statement_tools:
+            period = normalized.get("period")
+            latest = normalized.pop("latest", None)
+            if isinstance(period, str) and period.lower() == "latest":
+                normalized["period"] = "quarterly"
+            elif isinstance(latest, str):
+                candidate = latest.lower()
+                if candidate in {"annual", "quarterly", "ttm"}:
+                    normalized["period"] = candidate
+                elif candidate == "latest":
+                    normalized.setdefault("period", "quarterly")
+            elif latest:
+                normalized.setdefault("period", "quarterly")
+            elif not period:
+                normalized.setdefault("period", "quarterly")
+
+        if tool_name == "get_price_snapshot":
+            normalized.setdefault("ticker", normalized.get("symbol"))
+
+        return normalized
+
     # ---------- tool execution ----------
     def _execute_tool(self, tool, tool_name: str, inp_args):
         """Execute a tool with progress indication."""
@@ -354,12 +433,17 @@ class Agent:
                     tool_name = tool_call["name"]
                     initial_args = tool_call["args"]
                     
-                    # Refine tool arguments for better performance.
-                    optimized_args = self.optimize_tool_args(tool_name, initial_args, task.description)
-                    
+                    # Refine tool arguments for better performance, unless disabled.
+                    optimized_args = (
+                        initial_args
+                        if self.disable_tool_arg_optimization
+                        else self.optimize_tool_args(tool_name, initial_args, task.description)
+                    )
+                    normalized_args = self._normalize_tool_args(tool_name, optimized_args)
+
                     # Execute the tool.
                     tool_to_run = next((t for t in self.tools if t.name == tool_name), None)
-                    expanded_args_list = self._expand_tool_args(tool_to_run, optimized_args)
+                    expanded_args_list = self._expand_tool_args(tool_to_run, normalized_args)
                     to_execute = []
                     for expanded_args in expanded_args_list:
                         # Create a signature of the action to be taken.

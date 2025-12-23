@@ -12,6 +12,7 @@ from langchain_core.tools import BaseTool
 from openai import APIConnectionError
 from pydantic import BaseModel
 
+from dexter.config import OPENAI_API_KEY
 from dexter.prompts import DEFAULT_SYSTEM_PROMPT
 from dexter.schemas import Answer
 from dexter.utils.logger import Logger
@@ -60,7 +61,7 @@ def get_llm(model_override: Optional[str] = None) -> ChatOpenAI:
     """
     base_url = os.getenv("OPENAI_BASE_URL")
     model = model_override or os.getenv("OPENAI_MODEL", "gpt-4.1")
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = OPENAI_API_KEY
     timeout_env = os.getenv("OPENAI_TIMEOUT")
     max_retries_env = os.getenv("OPENAI_MAX_RETRIES")
 
@@ -175,6 +176,12 @@ def _get_provider_type(base_url: Optional[str]) -> str:
     return "openai"
 
 
+def _force_plain_responses() -> bool:
+    """Return True if structured output/tool calling should be disabled."""
+    value = os.getenv("DEXTER_FORCE_PLAIN_RESPONSES", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
 def _is_empty_answer(answer: str) -> bool:
     """Detect empty or placeholder Answer content."""
     normalized = (answer or "").strip().lower()
@@ -237,16 +244,19 @@ def call_llm(
     base_extra_body = _get_base_extra_body(base_url, llm.model_name)
 
     provider_type = _get_provider_type(base_url)
+    force_plain = _force_plain_responses()
+    if force_plain:
+        active_schema = None
 
     try:
-        if active_schema is not None and provider_type == "ollama" and not tools:
+        if not force_plain and active_schema is not None and provider_type == "ollama" and not tools:
             json_mode = True
             extra_body = dict(base_extra_body or {})
             extra_body["format"] = "json"
             runnable = llm.bind(extra_body=extra_body)
-        elif active_schema is not None:
+        elif not force_plain and active_schema is not None:
             runnable = llm.with_structured_output(active_schema, method="function_calling")
-        elif tools:
+        elif not force_plain and tools:
             prefer_tools = True
             runnable = llm.bind_tools(tools)
     except Exception as e:
@@ -261,6 +271,8 @@ def call_llm(
         meta_bits.append(f"schema={requested_schema.__name__}")
     if tool_names:
         meta_bits.append(f"tools={tool_names}")
+    if force_plain:
+        meta_bits.append("force_plain=true")
     meta_bits.append(f"model={llm.model_name}")
     if json_mode:
         meta_bits.append("json_mode=ollama")

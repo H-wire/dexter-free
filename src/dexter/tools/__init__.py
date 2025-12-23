@@ -38,6 +38,7 @@ from dexter.tools.yf_metrics import (
 )
 from dexter.tools.yf_news import yf_get_news
 from dexter.tools.yf_prices import yf_get_price_snapshot, yf_get_prices
+from dexter.tools.web_search_tool import web_search
 
 
 FINANCIAL_DATASETS_TOOLS: list[Callable[..., any]] = [
@@ -72,17 +73,21 @@ YFINANCE_TOOLS: list[Callable[..., any]] = [
     yf_get_analyst_estimates,
 ]
 
+WEB_SEARCH_TOOLS: list[Callable[..., any]] = [web_search]
 
-AVAILABLE_DATA_PROVIDERS: tuple[str, ...] = ("financialdatasets", "yfinance")
+
+AVAILABLE_DATA_PROVIDERS: tuple[str, ...] = ("financialdatasets", "yfinance", "web")
 
 
 def get_tools(
-    provider: Literal["financialdatasets", "yfinance"] = "yfinance",
+    provider: Literal["financialdatasets", "yfinance", "web"] = "yfinance",
 ) -> list[Callable[..., any]]:
     """Return the tool collection for the requested data provider."""
     provider_key = provider.lower()
     if provider_key == "yfinance":
-        return YFINANCE_TOOLS
+        return YFINANCE_TOOLS + WEB_SEARCH_TOOLS
+    elif provider_key == "web":
+        return WEB_SEARCH_TOOLS
     return FINANCIAL_DATASETS_TOOLS
 
 
